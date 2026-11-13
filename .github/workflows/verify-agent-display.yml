@@ -1,0 +1,36 @@
+name: verify-agent-display
+
+on:
+  push:
+    branches:
+      - verify-agent-display-hidden
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc g++ cmake make clang lld llvm \
+            pkg-config protobuf-compiler \
+            libasound2-dev libfontconfig-dev libgit2-dev libglib2.0-dev \
+            libssl-dev libva-dev libvulkan1 libwayland-dev libx11-xcb-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev libsqlite3-dev \
+            musl-tools musl-dev jq git curl gettext-base elfutils
+
+      - name: Select Rust toolchain
+        run: rustup show
+
+      - name: Cargo check
+        env:
+          CARGO_BUILD_JOBS: 2
+        run: cargo check -p agent_ui -p settings_ui -p agent

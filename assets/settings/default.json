@@ -1395,6 +1395,10 @@
     //
     // Default: true
     "expand_terminal_card": true,
+    // How tool calls are displayed in agent conversations.
+    //
+    // Default: verbose
+    "tool_call_display": "verbose",
     // Command to automatically run when Zed creates a Terminal Thread shell in the agent panel.
     // The command is sent to the shell as if typed, so it is interpreted by your
     // configured shell (including on Windows and remote/WSL projects).

@@ -44,7 +44,10 @@ use language_model::{
 };
 use notifications::status_toast::StatusToast;
 use project::ResolvedPath;
-use settings::{update_settings_file, update_settings_file_with_completion};
+use settings::{
+    SettingsStore, ThinkingBlockDisplay, ToolCallDisplay, update_settings_file,
+    update_settings_file_with_completion,
+};
 use ui::{
     ButtonLike, CalloutBorderPosition, Checkbox, SpinnerLabel, SpinnerVariant, SplitButton,
     SplitButtonStyle, Tab, ToggleState,
@@ -1045,6 +1048,13 @@ impl ThreadView {
 
         subscriptions.push(cx.observe(&thread, |_, _, cx| cx.notify()));
         subscriptions.push(cx.observe(&conversation, |_, _, cx| cx.notify()));
+        subscriptions.push(cx.observe_global::<SettingsStore>(|this, cx| {
+            // Display settings change row heights, so previously measured items
+            // must be remeasured.
+            this.list_state
+                .remeasure_items(0..this.list_state.item_count());
+            cx.notify();
+        }));
         subscriptions.push(cx.subscribe(&thread, |this, _, event, cx| {
             if matches!(
                 event,
@@ -7437,6 +7447,58 @@ impl ThreadView {
         .flex_grow_1()
     }
 
+    /// In the `Hidden` tool call display mode, informational tool calls are not
+    /// rendered at all. Calls the user may need to act on or review stay visible:
+    /// permission requests, subagent cards, edits, terminal commands, deletions,
+    /// moves, and failed or rejected calls.
+    fn should_hide_tool_call(&self, tool_call: &ToolCall, cx: &Context<Self>) -> bool {
+        if AgentSettings::get_global(cx).tool_call_display != ToolCallDisplay::Hidden {
+            return false;
+        }
+
+        // Search jumps to individual calls, so keep them rendered while the
+        // search bar is open.
+        if self.thread_search_visible {
+            return false;
+        }
+
+        let is_informational = matches!(
+            tool_call.kind(),
+            acp_v2::ToolKind::Read | acp_v2::ToolKind::Search | acp_v2::ToolKind::Fetch
+        );
+        if !is_informational {
+            return false;
+        }
+
+        if tool_call.is_subagent()
+            || tool_call.authorization_id().is_some()
+            || matches!(
+                tool_call.status(),
+                ToolCallStatus::WaitingForConfirmation
+                    | ToolCallStatus::Failed
+                    | ToolCallStatus::Rejected
+            )
+            || self
+                .render_generic_tool_permissions(
+                    self.thread.read(cx).session_id(),
+                    tool_call,
+                    cx,
+                )
+                .is_some()
+        {
+            return false;
+        }
+
+        let is_edit = tool_call.diffs().next().is_some()
+            || tool_call
+                .content()
+                .iter()
+                .any(|content| matches!(content, ToolCallContent::DiffPatch { .. }));
+        let has_terminal = tool_call.terminals().next().is_some();
+
+        !is_edit && !has_terminal
+    }
+
     fn render_entry(
         &self,
         entry_ix: usize,
@@ -7658,7 +7720,9 @@ impl ThreadView {
                             AssistantMessageChunk::Thought { block, .. } => {
                                 let this_is_blank = !block.visible_content(cx);
                                 is_blank = is_blank && this_is_blank;
-                                (!this_is_blank).then(|| {
+                                let is_hidden = AgentSettings::get_global(cx).thinking_display
+                                    == ThinkingBlockDisplay::Hidden;
+                                (!this_is_blank && !is_hidden).then(|| {
                                     self.render_thinking_block(
                                         entry_ix, chunk_ix, block, window, cx,
                                     )
@@ -7692,6 +7756,10 @@ impl ThreadView {
                 }
             }
             AgentThreadEntry::ToolCall(tool_call) => {
+                if self.should_hide_tool_call(tool_call, cx) {
+                    return Empty.into_any();
+                }
+
                 // A canceled tool call that produced visible output is still worth
                 // showing, but one that was canceled before producing anything just
                 // renders as a useless "Canceled" card — hide those entirely.
@@ -8565,6 +8633,8 @@ impl ThreadView {
                     if matches!(event, ThreadSearchBarEvent::Dismissed) {
                         this.thread_search_visible = false;
                         this.message_editor.focus_handle(cx).focus(window, cx);
+                        this.list_state
+                            .remeasure_items(0..this.list_state.item_count());
                         cx.notify();
                     }
                 },
@@ -8592,6 +8662,8 @@ impl ThreadView {
             }
             cx.notify();
         }
+        self.list_state
+            .remeasure_items(0..self.list_state.item_count());
     }
 
     pub fn open_thread_as_markdown(

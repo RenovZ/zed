@@ -233,6 +233,7 @@ impl EntryViewState {
                     self.user_toggled_thinking_blocks.insert(key);
                 }
             }
+            ThinkingBlockDisplay::Hidden => {}
         }
     }
 
@@ -252,6 +253,7 @@ impl EntryViewState {
             }
             ThinkingBlockDisplay::AlwaysExpanded => (!is_user_toggled, false),
             ThinkingBlockDisplay::AlwaysCollapsed => (is_user_toggled, false),
+            ThinkingBlockDisplay::Hidden => (false, false),
         }
     }
 
