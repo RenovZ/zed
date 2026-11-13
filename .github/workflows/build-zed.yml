@@ -38,21 +38,68 @@ jobs:
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
           ZED_BUNDLE: "true"
         run: |
+          echo stable > crates/zed/RELEASE_CHANNEL
           export RELEASE_VERSION="$(script/get-crate-version zed)"
           cargo build --release -p zed --bin zed
+          cargo build --release -p cli
 
-      - name: Collect binary
+      - name: Assemble bundle
         run: |
-          mkdir -p dist
-          cp target/release/zed dist/zed
-          strip --strip-unneeded dist/zed || true
-          ls -lh dist/zed
-          ldd dist/zed || true
+          set -euo pipefail
+          APP=dist/zed.app
+          mkdir -p "$APP/bin" "$APP/libexec" \
+            "$APP/share/icons/hicolor/512x512/apps" \
+            "$APP/share/icons/hicolor/1024x1024/apps" \
+            "$APP/share/applications"
+          llvm-objcopy --strip-debug --discard-all target/release/cli "$APP/bin/zed"
+          llvm-objcopy --strip-unneeded target/release/zed "$APP/libexec/zed-editor"
+          cp crates/zed/resources/app-icon.png "$APP/share/icons/hicolor/512x512/apps/zed.png"
+          cp crates/zed/resources/app-icon@2x.png "$APP/share/icons/hicolor/1024x1024/apps/zed.png"
+          export DO_STARTUP_NOTIFY=true APP_CLI=zed APP_ICON=zed APP_ARGS='%U' APP_NAME=Zed
+          envsubst < crates/zed/resources/zed.desktop.in > "$APP/share/applications/dev.zed.Zed.desktop"
+          chmod +x "$APP/share/applications/dev.zed.Zed.desktop"
+          cp LICENSE-GPL "$APP/LICENSE-GPL"
+          tar -czf dist/zed-linux-x86_64.tar.gz -C dist zed.app
+          ls -lh dist/
 
-      - name: Upload binary
+      - name: Build deb package
+        run: |
+          set -euo pipefail
+          VERSION="$(script/get-crate-version zed)"
+          PKG=dist/deb-root
+          rm -rf "$PKG"
+          mkdir -p "$PKG/opt/zed" "$PKG/usr/bin" "$PKG/usr/share/applications" \
+            "$PKG/usr/share/icons/hicolor/512x512/apps" \
+            "$PKG/usr/share/icons/hicolor/1024x1024/apps" \
+            "$PKG/usr/share/doc/zed" "$PKG/DEBIAN"
+          cp -a dist/zed.app "$PKG/opt/zed/zed.app"
+          ln -s /opt/zed/zed.app/bin/zed "$PKG/usr/bin/zed"
+          cp dist/zed.app/share/applications/dev.zed.Zed.desktop "$PKG/usr/share/applications/"
+          cp dist/zed.app/share/icons/hicolor/512x512/apps/zed.png "$PKG/usr/share/icons/hicolor/512x512/apps/"
+          cp dist/zed.app/share/icons/hicolor/1024x1024/apps/zed.png "$PKG/usr/share/icons/hicolor/1024x1024/apps/"
+          cp LICENSE-GPL "$PKG/usr/share/doc/zed/copyright"
+          INSTALLED_SIZE="$(du -sk "$PKG" | cut -f1)"
+          cat > "$PKG/DEBIAN/control" <<EOF
+          Package: zed
+          Version: $VERSION
+          Section: editors
+          Priority: optional
+          Architecture: amd64
+          Installed-Size: $INSTALLED_SIZE
+          Depends: libasound2t64, libfontconfig1, libgit2-1.7, libglib2.0-0t64, libssl3t64, libva2, libvulkan1, libwayland-client0, libwayland-cursor0, libwayland-egl1, libxkbcommon0, libxkbcommon-x11-0, libzstd1, libsqlite3-0, libx11-6, libx11-xcb1, libxcb1, libstdc++6
+          Maintainer: RenovZ <noreply@localhost>
+          Description: High-performance, multiplayer code editor (custom build)
+           Custom Zed build with hidden thinking-block and tool-call display modes.
+          EOF
+          dpkg-deb --build --root-owner-group "$PKG" "dist/zed_${VERSION}_amd64.deb"
+          dpkg-deb --info "dist/zed_${VERSION}_amd64.deb"
+
+      - name: Upload packages
         uses: actions/upload-artifact@v4
         with:
-          name: zed-linux-x86_64
-          path: dist/zed
+          name: zed-linux-packages
+          path: |
+            dist/zed-linux-x86_64.tar.gz
+            dist/zed_*_amd64.deb
           compression-level: 0
           retention-days: 14
