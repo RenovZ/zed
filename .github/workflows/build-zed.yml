@@ -1,0 +1,58 @@
+name: build-zed
+
+on:
+  push:
+    branches:
+      - build-zed-hidden
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc g++ cmake make clang lld llvm \
+            pkg-config protobuf-compiler \
+            libasound2-dev libfontconfig-dev libgit2-dev libglib2.0-dev \
+            libssl-dev libva-dev libvulkan1 libwayland-dev libx11-xcb-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev libsqlite3-dev \
+            musl-tools musl-dev jq git curl gettext-base elfutils
+
+      - name: Select Rust toolchain
+        run: rustup show
+
+      - name: Build Zed
+        env:
+          CARGO_BUILD_JOBS: 2
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_DEBUG: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+          ZED_BUNDLE: "true"
+        run: |
+          export RELEASE_VERSION="$(script/get-crate-version zed)"
+          cargo build --release -p zed --bin zed
+
+      - name: Collect binary
+        run: |
+          mkdir -p dist
+          cp target/release/zed dist/zed
+          strip --strip-unneeded dist/zed || true
+          ls -lh dist/zed
+          ldd dist/zed || true
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: zed-linux-x86_64
+          path: dist/zed
+          compression-level: 0
+          retention-days: 14
