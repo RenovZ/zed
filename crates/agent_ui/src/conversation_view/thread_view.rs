@@ -763,7 +763,7 @@ pub struct ThreadView {
     pub list_state: ListState,
     pub session_capabilities: SharedSessionCapabilities,
     pub expanded_tool_call_raw_inputs: HashSet<acp_v2::ToolCallId>,
-    rendered_tool_call_display: ToolCallDisplay,
+    hidden_tool_calls: HashSet<usize>,
     rendered_terminal_tool_display: ToolCallDisplay,
     collapsed_sandbox_authorization_details: HashSet<acp_v2::ToolCallId>,
     collapsed_sandbox_network_details: HashSet<acp_v2::ToolCallId>,
@@ -1051,8 +1051,6 @@ impl ThreadView {
         subscriptions.push(cx.observe(&thread, |_, _, cx| cx.notify()));
         subscriptions.push(cx.observe(&conversation, |_, _, cx| cx.notify()));
         subscriptions.push(cx.observe_global::<SettingsStore>(|this, cx| {
-            this.rendered_tool_call_display =
-                AgentSettings::get_global(cx).tool_call_display;
             let terminal_tool_display = AgentSettings::get_global(cx).terminal_tool_display;
             if terminal_tool_display != this.rendered_terminal_tool_display {
                 this.rendered_terminal_tool_display = terminal_tool_display;
@@ -1337,7 +1335,7 @@ impl ThreadView {
             last_token_limit_telemetry: None,
             thread_feedback: Default::default(),
             expanded_tool_call_raw_inputs: HashSet::default(),
-            rendered_tool_call_display: AgentSettings::get_global(cx).tool_call_display,
+            hidden_tool_calls: HashSet::default(),
             rendered_terminal_tool_display: AgentSettings::get_global(cx).terminal_tool_display,
             collapsed_sandbox_authorization_details: HashSet::default(),
             collapsed_sandbox_network_details: HashSet::default(),
@@ -7453,6 +7451,28 @@ fn sandbox_network_rows(network: &SandboxNetPolicy) -> Vec<SandboxRow> {
 
 impl ThreadView {
     fn render_entries(&mut self, cx: &mut Context<Self>) -> List {
+        // Hidden entries render as empty elements. Cached item heights from when
+        // they were still visible would otherwise leave gaps in the list, so
+        // remeasure whenever the set of hidden entries changes.
+        let hidden_tool_calls: HashSet<usize> = self
+            .thread
+            .read(cx)
+            .entries()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                let AgentThreadEntry::ToolCall(tool_call) = entry else {
+                    return None;
+                };
+                self.should_hide_tool_call(tool_call, cx).then_some(index)
+            })
+            .collect();
+        if hidden_tool_calls != self.hidden_tool_calls {
+            self.hidden_tool_calls = hidden_tool_calls;
+            self.list_state
+                .remeasure_items(0..self.list_state.item_count());
+        }
+
         let max_content_width = AgentSettings::get_global(cx).max_content_width;
         let centered_container = move |content: AnyElement| {
             h_flex().w_full().justify_center().child(
