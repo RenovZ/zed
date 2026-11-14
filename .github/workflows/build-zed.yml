@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
@@ -61,6 +61,16 @@ jobs:
           cp LICENSE-GPL "$APP/LICENSE-GPL"
           tar -czf dist/zed-linux-x86_64.tar.gz -C dist zed.app
           ls -lh dist/
+
+      - name: Verify glibc compatibility
+        run: |
+          set -euo pipefail
+          MAX_GLIBC="$(objdump -T dist/zed.app/libexec/zed-editor | grep -o 'GLIBC_2\.[0-9]\+' | sort -V -u | tail -1)"
+          echo "Max required GLIBC: $MAX_GLIBC"
+          if [ "$(printf '%s\n' "$MAX_GLIBC" "GLIBC_2.39" | sort -V | tail -1)" != "GLIBC_2.39" ]; then
+            echo "Binary requires a newer glibc than Ubuntu 24.04 provides"
+            exit 1
+          fi
 
       - name: Build deb package
         run: |
