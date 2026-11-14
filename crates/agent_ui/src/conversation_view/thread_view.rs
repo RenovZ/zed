@@ -7451,9 +7451,11 @@ fn sandbox_network_rows(network: &SandboxNetPolicy) -> Vec<SandboxRow> {
 
 impl ThreadView {
     fn render_entries(&mut self, cx: &mut Context<Self>) -> List {
-        // Hidden entries render as empty elements. Cached item heights from when
-        // they were still visible would otherwise leave gaps in the list, so
-        // remeasure whenever the set of hidden entries changes.
+        // Hidden entries render as empty elements, but the list keeps their
+        // previously measured heights, leaving gaps. Splice affected items back
+        // to unmeasured items without a size hint: `ListSizingBehavior::Auto`
+        // never re-measures off-screen items, so `remeasure_items`, which keeps
+        // the hint, would leave the gap in place.
         let hidden_tool_calls: HashSet<usize> = self
             .thread
             .read(cx)
@@ -7468,9 +7470,24 @@ impl ThreadView {
             })
             .collect();
         if hidden_tool_calls != self.hidden_tool_calls {
+            let changed: Vec<usize> = self
+                .hidden_tool_calls
+                .symmetric_difference(&hidden_tool_calls)
+                .copied()
+                .collect();
             self.hidden_tool_calls = hidden_tool_calls;
-            self.list_state
-                .remeasure_items(0..self.list_state.item_count());
+            for index in changed {
+                if index >= self.list_state.item_count() {
+                    continue;
+                }
+                let focus_handle = self
+                    .entry_view_state
+                    .read(cx)
+                    .entry(index)
+                    .and_then(|entry| entry.focus_handle(cx));
+                self.list_state
+                    .splice_focusable(index..index + 1, std::iter::once(focus_handle));
+            }
         }
 
         let max_content_width = AgentSettings::get_global(cx).max_content_width;
@@ -7509,10 +7526,10 @@ impl ThreadView {
     /// `tool_call_display`; terminal commands follow `run_command_display`;
     /// file edits follow `edit_tool_display`.
     ///
-    /// Calls the user may need to act on or review always stay visible:
-    /// permission requests, subagent cards, and failed or rejected calls.
-    /// Running terminal commands stay visible too, so they can be stopped; only
-    /// finished successful calls disappear.
+    /// Calls that need user action always stay visible: permission requests
+    /// and subagent cards. Running calls stay visible too, so they can be
+    /// stopped. Everything else in a hidden category disappears regardless of
+    /// whether it succeeded, failed, or was cancelled.
     fn should_hide_tool_call(&self, tool_call: &ToolCall, cx: &Context<Self>) -> bool {
         let settings = AgentSettings::get_global(cx);
         let hide_informational = settings.tool_call_display == ToolCallDisplay::Hidden;
@@ -7549,15 +7566,13 @@ impl ThreadView {
             return false;
         }
 
-        // Everything the user may need to act on or review stays visible.
+        // Calls that need user action stay visible: permission requests and
+        // subagents own interaction surfaces. Everything else in a hidden
+        // category disappears regardless of whether it succeeded, failed, or
+        // was cancelled.
         if tool_call.is_subagent()
             || tool_call.authorization_id().is_some()
-            || matches!(
-                tool_call.status(),
-                ToolCallStatus::WaitingForConfirmation
-                    | ToolCallStatus::Failed
-                    | ToolCallStatus::Rejected
-            )
+            || matches!(tool_call.status(), ToolCallStatus::WaitingForConfirmation)
             || self
                 .render_generic_tool_permissions(
                     self.thread.read(cx).session_id(),
@@ -7569,33 +7584,23 @@ impl ThreadView {
             return false;
         }
 
+        if is_terminal {
+            // Terminal lifecycle events can finish before the agent reports a
+            // completed status, so treat finished terminals as hidden here.
+            let terminals_finished = tool_call.terminals().next().is_some()
+                && tool_call
+                    .terminals()
+                    .all(|terminal| terminal.read(cx).output().is_some());
+            if terminals_finished {
+                return true;
+            }
+        }
+
         if matches!(
             tool_call.status(),
             ToolCallStatus::Pending | ToolCallStatus::InProgress | ToolCallStatus::Paused
         ) {
             return false;
-        }
-
-        if is_terminal {
-            let terminal_failed = tool_call.terminals().any(|terminal| {
-                terminal.read(cx).output().is_some_and(|output| {
-                    output.exit_status.exit_code.is_some_and(|code| code != 0)
-                        || output.exit_status.signal.is_some()
-                })
-            });
-            if terminal_failed {
-                return false;
-            }
-
-            let terminals_finished = tool_call.terminals().next().is_some()
-                && tool_call
-                    .terminals()
-                    .all(|terminal| terminal.read(cx).output().is_some());
-            return terminals_finished
-                || matches!(
-                    tool_call.status(),
-                    ToolCallStatus::Completed | ToolCallStatus::Canceled
-                );
         }
 
         true
@@ -7820,11 +7825,14 @@ impl ThreadView {
                                 })
                             }
                             AssistantMessageChunk::Thought { block, .. } => {
-                                let this_is_blank = !block.visible_content(cx);
-                                is_blank = is_blank && this_is_blank;
                                 let is_hidden = AgentSettings::get_global(cx).thinking_display
                                     == ThinkingBlockDisplay::Hidden;
-                                (!this_is_blank && !is_hidden).then(|| {
+                                // Treat hidden thoughts as blank too, so a turn
+                                // that only thought renders nothing at all
+                                // instead of an empty message bubble.
+                                let this_is_blank = is_hidden || !block.visible_content(cx);
+                                is_blank = is_blank && this_is_blank;
+                                (!this_is_blank).then(|| {
                                     self.render_thinking_block(
                                         entry_ix, chunk_ix, block, window, cx,
                                     )
