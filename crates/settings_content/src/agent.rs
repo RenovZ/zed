@@ -400,6 +400,11 @@ pub struct AgentSettingsContent {
     ///
     /// Default: verbose
     pub terminal_tool_display: Option<ToolCallDisplay>,
+    /// How file edit (Edit, Delete, Move) tool calls are displayed in agent
+    /// conversations. When hidden, finished edit cards are not rendered.
+    ///
+    /// Default: verbose
+    pub edit_tool_display: Option<ToolCallDisplay>,
     /// Command to automatically run when Zed creates a Terminal Thread shell in the agent panel.
     /// The command is sent to the shell as if typed, so it is interpreted by your
     /// configured shell (including on Windows and remote/WSL projects).

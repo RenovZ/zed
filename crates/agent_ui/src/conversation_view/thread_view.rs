@@ -7506,17 +7506,19 @@ impl ThreadView {
 
     /// Controls whether a tool call is hidden entirely in the current display
     /// modes. Informational calls (`Read`, `Search`, `Fetch`) follow
-    /// `tool_call_display`; terminal commands follow `terminal_tool_display`.
+    /// `tool_call_display`; terminal commands follow `terminal_tool_display`;
+    /// file edits follow `edit_tool_display`.
     ///
     /// Calls the user may need to act on or review always stay visible:
-    /// permission requests, subagent cards, edits, deletions, moves, and failed
-    /// or rejected calls. Running terminal commands stay visible too, so they
-    /// can be stopped; only finished successful commands disappear.
+    /// permission requests, subagent cards, and failed or rejected calls.
+    /// Running terminal commands stay visible too, so they can be stopped; only
+    /// finished successful calls disappear.
     fn should_hide_tool_call(&self, tool_call: &ToolCall, cx: &Context<Self>) -> bool {
         let settings = AgentSettings::get_global(cx);
         let hide_informational = settings.tool_call_display == ToolCallDisplay::Hidden;
         let hide_terminal = settings.terminal_tool_display == ToolCallDisplay::Hidden;
-        if !hide_informational && !hide_terminal {
+        let hide_edit = settings.edit_tool_display == ToolCallDisplay::Hidden;
+        if !hide_informational && !hide_terminal && !hide_edit {
             return false;
         }
 
@@ -7526,7 +7528,10 @@ impl ThreadView {
             return false;
         }
 
-        let is_edit = tool_call.diffs().next().is_some()
+        let is_edit = matches!(
+            tool_call.kind(),
+            acp_v2::ToolKind::Edit | acp_v2::ToolKind::Delete | acp_v2::ToolKind::Move
+        ) || tool_call.diffs().next().is_some()
             || tool_call
                 .content()
                 .iter()
@@ -7538,14 +7543,14 @@ impl ThreadView {
             acp_v2::ToolKind::Read | acp_v2::ToolKind::Search | acp_v2::ToolKind::Fetch
         );
         let should_hide_kind = (is_terminal && hide_terminal)
-            || (!is_terminal && is_informational && hide_informational);
+            || (!is_terminal && is_edit && hide_edit)
+            || (!is_terminal && !is_edit && is_informational && hide_informational);
         if !should_hide_kind {
             return false;
         }
 
         // Everything the user may need to act on or review stays visible.
-        if is_edit
-            || tool_call.is_subagent()
+        if tool_call.is_subagent()
             || tool_call.authorization_id().is_some()
             || matches!(
                 tool_call.status(),
@@ -7564,14 +7569,14 @@ impl ThreadView {
             return false;
         }
 
-        if is_terminal {
-            if matches!(
-                tool_call.status(),
-                ToolCallStatus::Pending | ToolCallStatus::InProgress | ToolCallStatus::Paused
-            ) {
-                return false;
-            }
+        if matches!(
+            tool_call.status(),
+            ToolCallStatus::Pending | ToolCallStatus::InProgress | ToolCallStatus::Paused
+        ) {
+            return false;
+        }
 
+        if is_terminal {
             let terminal_failed = tool_call.terminals().any(|terminal| {
                 terminal.read(cx).output().is_some_and(|output| {
                     output.exit_status.exit_code.is_some_and(|code| code != 0)
