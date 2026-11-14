@@ -763,6 +763,7 @@ pub struct ThreadView {
     pub list_state: ListState,
     pub session_capabilities: SharedSessionCapabilities,
     pub expanded_tool_call_raw_inputs: HashSet<acp_v2::ToolCallId>,
+    rendered_tool_call_display: ToolCallDisplay,
     collapsed_sandbox_authorization_details: HashSet<acp_v2::ToolCallId>,
     collapsed_sandbox_network_details: HashSet<acp_v2::ToolCallId>,
     /// Sandbox escalation prompts whose "surprising Unicode" warning the user
@@ -1049,6 +1050,34 @@ impl ThreadView {
         subscriptions.push(cx.observe(&thread, |_, _, cx| cx.notify()));
         subscriptions.push(cx.observe(&conversation, |_, _, cx| cx.notify()));
         subscriptions.push(cx.observe_global::<SettingsStore>(|this, cx| {
+            let tool_call_display = AgentSettings::get_global(cx).tool_call_display;
+            if tool_call_display != this.rendered_tool_call_display {
+                this.rendered_tool_call_display = tool_call_display;
+                if tool_call_display == ToolCallDisplay::Hidden {
+                    let terminal_ids: Vec<_> = this
+                        .thread
+                        .read(cx)
+                        .entries()
+                        .iter()
+                        .filter_map(|entry| {
+                            let AgentThreadEntry::ToolCall(tool_call) = entry else {
+                                return None;
+                            };
+                            let is_terminal =
+                                matches!(tool_call.kind(), acp_v2::ToolKind::Execute)
+                                    || tool_call.terminals().next().is_some();
+                            is_terminal.then(|| tool_call.id.clone())
+                        })
+                        .collect();
+                    if !terminal_ids.is_empty() {
+                        this.entry_view_state.update(cx, |state, _cx| {
+                            for tool_call_id in terminal_ids {
+                                state.collapse_tool_call(&tool_call_id);
+                            }
+                        });
+                    }
+                }
+            }
             // Display settings change row heights, so previously measured items
             // must be remeasured.
             this.list_state
@@ -1305,6 +1334,7 @@ impl ThreadView {
             last_token_limit_telemetry: None,
             thread_feedback: Default::default(),
             expanded_tool_call_raw_inputs: HashSet::default(),
+            rendered_tool_call_display: AgentSettings::get_global(cx).tool_call_display,
             collapsed_sandbox_authorization_details: HashSet::default(),
             collapsed_sandbox_network_details: HashSet::default(),
             acknowledged_confusable_warnings: HashSet::default(),
@@ -1612,7 +1642,10 @@ impl ThreadView {
                 }
             }
             ViewEvent::NewTerminal(tool_call_id) => {
-                if AgentSettings::get_global(cx).expand_terminal_card {
+                let settings = AgentSettings::get_global(cx);
+                if settings.expand_terminal_card
+                    && settings.tool_call_display != ToolCallDisplay::Hidden
+                {
                     self.entry_view_state.update(cx, |state, _cx| {
                         state.expand_tool_call(tool_call_id.clone());
                     });
@@ -7447,10 +7480,12 @@ impl ThreadView {
         .flex_grow_1()
     }
 
-    /// In the `Hidden` tool call display mode, informational tool calls are not
-    /// rendered at all. Calls the user may need to act on or review stay visible:
-    /// permission requests, subagent cards, edits, terminal commands, deletions,
-    /// moves, and failed or rejected calls.
+    /// In the `Hidden` tool call display mode, tool calls that only produce
+    /// informational output are not rendered at all. Calls the user may need to
+    /// act on or review stay visible: permission requests, subagent cards,
+    /// edits, deletions, moves, running or failed terminal commands, and failed
+    /// or rejected calls. Finished terminal commands are hidden too, since their
+    /// command text is long and their successful output is usually noise.
     fn should_hide_tool_call(&self, tool_call: &ToolCall, cx: &Context<Self>) -> bool {
         if AgentSettings::get_global(cx).tool_call_display != ToolCallDisplay::Hidden {
             return false;
@@ -7462,15 +7497,24 @@ impl ThreadView {
             return false;
         }
 
+        let is_edit = tool_call.diffs().next().is_some()
+            || tool_call
+                .content()
+                .iter()
+                .any(|content| matches!(content, ToolCallContent::DiffPatch { .. }));
+        let is_terminal = matches!(tool_call.kind(), acp_v2::ToolKind::Execute)
+            || tool_call.terminals().next().is_some();
         let is_informational = matches!(
             tool_call.kind(),
             acp_v2::ToolKind::Read | acp_v2::ToolKind::Search | acp_v2::ToolKind::Fetch
         );
-        if !is_informational {
+        if !is_terminal && !is_informational {
             return false;
         }
 
-        if tool_call.is_subagent()
+        // Everything the user may need to act on or review stays visible.
+        if is_edit
+            || tool_call.is_subagent()
             || tool_call.authorization_id().is_some()
             || matches!(
                 tool_call.status(),
@@ -7489,14 +7533,36 @@ impl ThreadView {
             return false;
         }
 
-        let is_edit = tool_call.diffs().next().is_some()
-            || tool_call
-                .content()
-                .iter()
-                .any(|content| matches!(content, ToolCallContent::DiffPatch { .. }));
-        let has_terminal = tool_call.terminals().next().is_some();
+        if is_terminal {
+            if matches!(
+                tool_call.status(),
+                ToolCallStatus::Pending | ToolCallStatus::InProgress | ToolCallStatus::Paused
+            ) {
+                return false;
+            }
 
-        !is_edit && !has_terminal
+            let terminal_failed = tool_call.terminals().any(|terminal| {
+                terminal.read(cx).output().is_some_and(|output| {
+                    output.exit_status.exit_code.is_some_and(|code| code != 0)
+                        || output.exit_status.signal.is_some()
+                })
+            });
+            if terminal_failed {
+                return false;
+            }
+
+            let terminals_finished = tool_call.terminals().next().is_some()
+                && tool_call
+                    .terminals()
+                    .all(|terminal| terminal.read(cx).output().is_some());
+            return terminals_finished
+                || matches!(
+                    tool_call.status(),
+                    ToolCallStatus::Completed | ToolCallStatus::Canceled
+                );
+        }
+
+        true
     }
 
     fn render_entry(
@@ -9371,6 +9437,7 @@ impl ThreadView {
         &self,
         group: SharedString,
         is_preview: bool,
+        is_collapsed: bool,
         command: Entity<Markdown>,
         window: &Window,
         cx: &Context<Self>,
@@ -9383,6 +9450,33 @@ impl ThreadView {
             .and_then(|s| s.strip_suffix("\n```"))
             .unwrap_or(&command_source)
             .to_string();
+
+        if is_collapsed {
+            let first_line = command_text.lines().next().unwrap_or_default().trim();
+            return h_flex()
+                .group(group)
+                .h_6()
+                .p_1p5()
+                .gap_1()
+                .min_w_0()
+                .when(is_preview, |this| {
+                    this.child(
+                        Label::new("Run Command")
+                            .buffer_font(cx)
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
+                    )
+                })
+                .child(
+                    div().flex_1().min_w_0().child(
+                        Label::new(first_line.to_string())
+                            .buffer_font(cx)
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted)
+                            .truncate(),
+                    ),
+                );
+        }
 
         let mut style =
             MarkdownStyle::themed(MarkdownFont::Agent, window, cx).with_agent_buffer_font(cx);
@@ -9495,18 +9589,20 @@ impl ThreadView {
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "current directory".to_string());
 
-        let command_element = self.render_collapsible_command(
-            header_group.clone(),
-            false,
-            tool_call.label.clone(),
-            window,
-            cx,
-        );
-
         let is_expanded = self
             .entry_view_state
             .read(cx)
             .is_tool_call_expanded(&tool_call.id);
+
+        let command_element = self.render_collapsible_command(
+            header_group.clone(),
+            false,
+            !is_expanded
+                && AgentSettings::get_global(cx).tool_call_display == ToolCallDisplay::Hidden,
+            tool_call.label.clone(),
+            window,
+            cx,
+        );
 
         let truncated_tooltip = truncated_output.then(|| {
             if let Some(output) = output {
@@ -10110,6 +10206,9 @@ impl ThreadView {
                         self.render_collapsible_command(
                             card_header_id.clone(),
                             true,
+                            !is_open
+                                && AgentSettings::get_global(cx).tool_call_display
+                                    == ToolCallDisplay::Hidden,
                             tool_call.label.clone(),
                             window,
                             cx,
