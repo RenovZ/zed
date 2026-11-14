@@ -394,6 +394,12 @@ pub struct AgentSettingsContent {
     ///
     /// Default: verbose
     pub tool_call_display: Option<ToolCallDisplay>,
+    /// How terminal (Run Command) tool calls are displayed in agent conversations.
+    /// When hidden, finished commands are not rendered and running commands
+    /// collapse to a single line.
+    ///
+    /// Default: verbose
+    pub terminal_tool_display: Option<ToolCallDisplay>,
     /// Command to automatically run when Zed creates a Terminal Thread shell in the agent panel.
     /// The command is sent to the shell as if typed, so it is interpreted by your
     /// configured shell (including on Windows and remote/WSL projects).

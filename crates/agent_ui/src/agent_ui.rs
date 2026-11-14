@@ -1099,6 +1099,7 @@ mod tests {
             expand_edit_card: true,
             expand_terminal_card: true,
             tool_call_display: Default::default(),
+            terminal_tool_display: Default::default(),
             terminal_init_command: None,
             cancel_generation_on_terminal_stop: true,
             use_modifier_to_send: true,
