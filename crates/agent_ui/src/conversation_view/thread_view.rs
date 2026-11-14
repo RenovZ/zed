@@ -764,7 +764,7 @@ pub struct ThreadView {
     pub session_capabilities: SharedSessionCapabilities,
     pub expanded_tool_call_raw_inputs: HashSet<acp_v2::ToolCallId>,
     hidden_tool_calls: HashSet<usize>,
-    rendered_terminal_tool_display: ToolCallDisplay,
+    rendered_run_command_display: ToolCallDisplay,
     collapsed_sandbox_authorization_details: HashSet<acp_v2::ToolCallId>,
     collapsed_sandbox_network_details: HashSet<acp_v2::ToolCallId>,
     /// Sandbox escalation prompts whose "surprising Unicode" warning the user
@@ -1051,10 +1051,10 @@ impl ThreadView {
         subscriptions.push(cx.observe(&thread, |_, _, cx| cx.notify()));
         subscriptions.push(cx.observe(&conversation, |_, _, cx| cx.notify()));
         subscriptions.push(cx.observe_global::<SettingsStore>(|this, cx| {
-            let terminal_tool_display = AgentSettings::get_global(cx).terminal_tool_display;
-            if terminal_tool_display != this.rendered_terminal_tool_display {
-                this.rendered_terminal_tool_display = terminal_tool_display;
-                if terminal_tool_display == ToolCallDisplay::Hidden {
+            let run_command_display = AgentSettings::get_global(cx).run_command_display;
+            if run_command_display != this.rendered_run_command_display {
+                this.rendered_run_command_display = run_command_display;
+                if run_command_display == ToolCallDisplay::Hidden {
                     let terminal_ids: Vec<_> = this
                         .thread
                         .read(cx)
@@ -1336,7 +1336,7 @@ impl ThreadView {
             thread_feedback: Default::default(),
             expanded_tool_call_raw_inputs: HashSet::default(),
             hidden_tool_calls: HashSet::default(),
-            rendered_terminal_tool_display: AgentSettings::get_global(cx).terminal_tool_display,
+            rendered_run_command_display: AgentSettings::get_global(cx).run_command_display,
             collapsed_sandbox_authorization_details: HashSet::default(),
             collapsed_sandbox_network_details: HashSet::default(),
             acknowledged_confusable_warnings: HashSet::default(),
@@ -1646,7 +1646,7 @@ impl ThreadView {
             ViewEvent::NewTerminal(tool_call_id) => {
                 let settings = AgentSettings::get_global(cx);
                 if settings.expand_terminal_card
-                    && settings.terminal_tool_display != ToolCallDisplay::Hidden
+                    && settings.run_command_display != ToolCallDisplay::Hidden
                 {
                     self.entry_view_state.update(cx, |state, _cx| {
                         state.expand_tool_call(tool_call_id.clone());
@@ -7506,7 +7506,7 @@ impl ThreadView {
 
     /// Controls whether a tool call is hidden entirely in the current display
     /// modes. Informational calls (`Read`, `Search`, `Fetch`) follow
-    /// `tool_call_display`; terminal commands follow `terminal_tool_display`;
+    /// `tool_call_display`; terminal commands follow `run_command_display`;
     /// file edits follow `edit_tool_display`.
     ///
     /// Calls the user may need to act on or review always stay visible:
@@ -7516,7 +7516,7 @@ impl ThreadView {
     fn should_hide_tool_call(&self, tool_call: &ToolCall, cx: &Context<Self>) -> bool {
         let settings = AgentSettings::get_global(cx);
         let hide_informational = settings.tool_call_display == ToolCallDisplay::Hidden;
-        let hide_terminal = settings.terminal_tool_display == ToolCallDisplay::Hidden;
+        let hide_terminal = settings.run_command_display == ToolCallDisplay::Hidden;
         let hide_edit = settings.edit_tool_display == ToolCallDisplay::Hidden;
         if !hide_informational && !hide_terminal && !hide_edit {
             return false;
@@ -9634,7 +9634,7 @@ impl ThreadView {
             header_group.clone(),
             false,
             !is_expanded
-                && AgentSettings::get_global(cx).terminal_tool_display == ToolCallDisplay::Hidden,
+                && AgentSettings::get_global(cx).run_command_display == ToolCallDisplay::Hidden,
             tool_call.label.clone(),
             window,
             cx,
@@ -10243,7 +10243,7 @@ impl ThreadView {
                             card_header_id.clone(),
                             true,
                             !is_open
-                                && AgentSettings::get_global(cx).terminal_tool_display
+                                && AgentSettings::get_global(cx).run_command_display
                                     == ToolCallDisplay::Hidden,
                             tool_call.label.clone(),
                             window,

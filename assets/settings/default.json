@@ -1399,10 +1399,10 @@
     //
     // Default: verbose
     "tool_call_display": "verbose",
-    // How terminal (Run Command) tool calls are displayed in agent conversations.
+    // How Run Command (terminal) tool calls are displayed in agent conversations.
     //
     // Default: verbose
-    "terminal_tool_display": "verbose",
+    "run_command_display": "verbose",
     // How file edit (Edit, Delete, Move) tool calls are displayed in agent conversations.
     //
     // Default: verbose
