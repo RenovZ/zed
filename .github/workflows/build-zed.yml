@@ -32,10 +32,8 @@ jobs:
 
       - name: Build Zed
         env:
-          CARGO_BUILD_JOBS: 2
-          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_BUILD_JOBS: 1
           CARGO_PROFILE_RELEASE_DEBUG: "false"
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
           ZED_BUNDLE: "true"
         run: |
           echo stable > crates/zed/RELEASE_CHANNEL
@@ -104,12 +102,18 @@ jobs:
           dpkg-deb --build --root-owner-group "$PKG" "dist/zed_${VERSION}_amd64.deb"
           dpkg-deb --info "dist/zed_${VERSION}_amd64.deb"
 
-      - name: Upload packages
+      - name: Upload tarball
         uses: actions/upload-artifact@v4
         with:
-          name: zed-linux-packages
-          path: |
-            dist/zed-linux-x86_64.tar.gz
-            dist/zed_*_amd64.deb
+          name: zed-linux-tarball
+          path: dist/zed-linux-x86_64.tar.gz
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: zed-linux-deb
+          path: dist/zed_*_amd64.deb
           compression-level: 0
           retention-days: 14
