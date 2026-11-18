@@ -671,6 +671,26 @@ impl Terminal {
         }
     }
 
+    /// A bounded text snapshot of this terminal's output, used after the live
+    /// terminal is released so the conversation stops retaining its grid.
+    pub fn output_snapshot(&self, cx: &App) -> String {
+        const SNAPSHOT_BYTE_LIMIT: usize = 64 * 1024;
+        let mut content = match &self.output {
+            Some(output) => output.content.clone(),
+            None => self.truncated_output(cx).0,
+        };
+        if content.len() > SNAPSHOT_BYTE_LIMIT {
+            let mut end = SNAPSHOT_BYTE_LIMIT;
+            while !content.is_char_boundary(end) {
+                end -= 1;
+            }
+            end = content[..end].rfind('\n').unwrap_or(end);
+            content.truncate(end);
+            content.push_str("\n… (output truncated)");
+        }
+        content
+    }
+
     pub(crate) fn write_display_output(&mut self, data: &[u8], cx: &mut Context<Self>) {
         if self.is_process_backed() {
             return;
@@ -986,7 +1006,7 @@ pub async fn create_terminal_entity(
 
     project
         .update(cx, |project, cx| {
-            project.create_terminal_task(
+            project.create_terminal_task_with_scrollback(
                 task::SpawnInTerminal {
                     command: Some(task_command),
                     args: task_args,
@@ -994,6 +1014,7 @@ pub async fn create_terminal_entity(
                     env,
                     ..Default::default()
                 },
+                Some(crate::AGENT_TERMINAL_MAX_SCROLLBACK_LINES),
                 cx,
             )
         })

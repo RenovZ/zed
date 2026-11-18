@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - build-zed-hidden
+      - agent-memory-fix
   workflow_dispatch:
 
 permissions:

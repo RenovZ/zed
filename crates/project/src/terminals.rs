@@ -67,6 +67,21 @@ impl Project {
         spawn_task: SpawnInTerminal,
         cx: &mut Context<Self>,
     ) -> Task<Result<Entity<Terminal>>> {
+        self.create_terminal_task_with_scrollback(spawn_task, None, cx)
+    }
+
+    /// Like [`Self::create_terminal_task`], but lets the caller cap the
+    /// terminal's scrollback.
+    ///
+    /// Agent panels create one terminal per command and keep them for the
+    /// lifetime of the conversation, so they pass a much smaller cap than the
+    /// user-facing `terminal.max_scroll_history_lines` setting.
+    pub fn create_terminal_task_with_scrollback(
+        &mut self,
+        spawn_task: SpawnInTerminal,
+        max_scroll_history_lines: Option<usize>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Entity<Terminal>>> {
         let is_via_remote = self.remote_client.is_some();
 
         let path: Option<Arc<Path>> = if let Some(cwd) = &spawn_task.cwd {
@@ -91,6 +106,11 @@ impl Project {
             });
         }
         let settings = TerminalSettings::get(settings_location, cx).clone();
+        let max_scroll_history_lines =
+            match (max_scroll_history_lines, settings.max_scroll_history_lines) {
+                (Some(cap), Some(configured)) => Some(cap.min(configured)),
+                (cap, configured) => cap.or(configured),
+            };
         let detect_venv = settings.detect_venv.as_option().is_some();
 
         let terminal_mode = TerminalMode::task(spawn_task.clone());
@@ -245,7 +265,7 @@ impl Project {
                         env,
                         settings.cursor_shape,
                         settings.alternate_scroll,
-                        settings.max_scroll_history_lines,
+                        max_scroll_history_lines,
                         settings.path_hyperlink_regexes,
                         Duration::from_millis(settings.path_hyperlink_timeout_ms),
                         is_via_remote,

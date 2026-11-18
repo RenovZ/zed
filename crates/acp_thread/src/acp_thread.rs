@@ -102,6 +102,11 @@ impl std::fmt::Display for MaxOutputTokensError {
 
 impl std::error::Error for MaxOutputTokensError {}
 
+/// Agent commands create one terminal per invocation and keep it for the
+/// lifetime of the thread. Keep their scrollback small so a long session does
+/// not retain hundreds of megabytes of terminal grids.
+pub(crate) const AGENT_TERMINAL_MAX_SCROLLBACK_LINES: usize = 1_000;
+
 /// Legacy ACP metadata key used before tool calls had a dedicated name field.
 pub const TOOL_NAME_META_KEY: &str = "tool_name";
 
@@ -1881,6 +1886,36 @@ impl ToolCall {
                 ToolCallContent::Terminal { terminal, .. } => Some(terminal),
                 _ => None,
             })
+    }
+
+    /// Replaces the live terminal content for `terminal_id` with a text
+    /// snapshot, so the conversation no longer retains the terminal's grid.
+    fn replace_terminal_with_snapshot(
+        &mut self,
+        terminal_id: &acp_v2::TerminalId,
+        snapshot: &str,
+        language_registry: &Arc<LanguageRegistry>,
+        cx: &mut App,
+    ) -> bool {
+        let mut replaced = false;
+        for content in &mut self.structured_content {
+            if let ToolCallContent::Terminal { terminal, .. } = content
+                && terminal.read(cx).id() == terminal_id
+            {
+                *content = ToolCallContent::ContentBlock {
+                    block: ContentBlock::new_output(
+                        acp_v2::ContentBlock::Text(acp_v2::TextContent::new(
+                            ContentBlock::fenced_code_block(snapshot, None),
+                        )),
+                        language_registry,
+                        cx,
+                    ),
+                    meta: None,
+                };
+                replaced = true;
+            }
+        }
+        replaced
     }
 
     pub fn is_subagent(&self) -> bool {
@@ -8418,7 +8453,7 @@ impl AcpThread {
                 };
                 let terminal = project
                     .update(cx, |project, cx| {
-                        project.create_terminal_task(
+                        project.create_terminal_task_with_scrollback(
                             task::SpawnInTerminal {
                                 command: Some(task_command),
                                 args: task_args,
@@ -8426,6 +8461,7 @@ impl AcpThread {
                                 env: task_env,
                                 ..Default::default()
                             },
+                            Some(AGENT_TERMINAL_MAX_SCROLLBACK_LINES),
                             cx,
                         )
                     })
@@ -8475,12 +8511,38 @@ impl AcpThread {
         terminal_id: acp_v2::TerminalId,
         cx: &mut Context<Self>,
     ) -> Result<()> {
-        self.terminals
+        let terminal = self
+            .terminals
             .remove(&terminal_id)
-            .ok_or_else(|| terminal_not_found(&terminal_id))?
-            .update(cx, |terminal, cx| {
-                terminal.kill(cx);
-            });
+            .ok_or_else(|| terminal_not_found(&terminal_id))?;
+
+        // Tool calls hold a strong `Entity<Terminal>` reference, so removing
+        // the terminal from the map is not enough to release its grid and
+        // scrollback. Keep a bounded text snapshot for display instead.
+        let snapshot = terminal.read(cx).output_snapshot(cx);
+        let language_registry = self.project.read(cx).languages().clone();
+        let mut updated_entries = Vec::new();
+        for (index, entry) in self.entries.iter_mut().enumerate() {
+            if let AgentThreadEntry::ToolCall(call) = entry
+                && call.replace_terminal_with_snapshot(
+                    &terminal_id,
+                    &snapshot,
+                    &language_registry,
+                    cx,
+                )
+            {
+                updated_entries.push(index);
+            }
+        }
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.kill(cx);
+        });
+
+        for index in updated_entries {
+            cx.emit(AcpThreadEvent::EntryUpdated(index));
+        }
+        cx.notify();
 
         Ok(())
     }
